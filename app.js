@@ -18,7 +18,6 @@ const btnStartOver = $("btn-start-over");
 const btnPlay      = $("btn-play");
 const btnRerender  = $("btn-rerender");
 const btnCopy      = $("btn-copy");
-const btnCorrect   = $("btn-correct");
 const btnTradpub   = $("btn-tradpub");
 const btnRateGood  = $("btn-rate-good");
 const btnRateBad   = $("btn-rate-bad");
@@ -448,27 +447,6 @@ btnRateBad.addEventListener("click", () => {
   btnRateBad.classList.add("selected");
   btnRateGood.classList.remove("selected");
   sendRating(1);
-});
-
-btnCorrect.addEventListener("click", async () => {
-  if (!state.submissionId) {
-    ratingStatus.textContent = "(saving disabled — correction not sent)";
-    return;
-  }
-  const form = new FormData();
-  form.append("submission_id", state.submissionId);
-  form.append("correction", abcText.value);
-  btnCorrect.disabled = true;
-  try {
-    const r = await fetch(`${API_BASE}/rating`, { method: "POST", body: form });
-    if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
-    ratingStatus.textContent = "correction saved, thanks!";
-  } catch (err) {
-    ratingStatus.textContent = "(failed to save correction)";
-    console.error(err);
-  } finally {
-    btnCorrect.disabled = false;
-  }
 });
 
 async function encodeForUpload(img, maxLongSide, quality) {
