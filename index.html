@@ -83,6 +83,20 @@
   </p>
 </section>
 
+<!-- transcribe-in-flight overlay -->
+<div id="loading-overlay" class="loading-overlay hidden" aria-hidden="true">
+  <div class="loading-card">
+    <div class="loading-spinner"></div>
+    <div class="loading-title">Transcribing</div>
+    <div class="loading-status" id="loading-status">Uploading photo…</div>
+    <div class="loading-elapsed" id="loading-elapsed">0s</div>
+    <div class="loading-hint">
+      First transcribe after a quiet period needs the model to warm up — that's ~60s.
+      Subsequent transcribes are ~10s.
+    </div>
+  </div>
+</div>
+
 <script src="./app.js" type="module"></script>
 </body>
 </html>

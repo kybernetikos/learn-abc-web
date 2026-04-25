@@ -43,6 +43,15 @@ if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("./service-worker.js").catch(() => {});
 }
 
+// ----- pre-warm the GPU inference container -----
+// Modal scales to zero when idle; the first request after a quiet period
+// has to spin up a GPU container + load the 32B model (~60-90s).  Fire a
+// fire-and-forget GET to /warmup on page load so the GPU container starts
+// spinning up while the user is taking the photo / dragging corners.  By
+// the time they hit Transcribe, container is usually ready and the
+// transcribe response comes back fast (no Modal 303-redirect issues).
+fetch(`${API_BASE}/warmup`, { method: "GET", mode: "cors" }).catch(() => {});
+
 // ----- capture -----
 fileInput.addEventListener("change", async (e) => {
   const f = e.target.files?.[0];
@@ -202,13 +211,53 @@ btnRetake.addEventListener("click", () => {
   showStep("capture");
 });
 
+// ----- transcribe loading overlay -----
+
+const loadingOverlay = $("loading-overlay");
+const loadingStatus = $("loading-status");
+const loadingElapsed = $("loading-elapsed");
+
+const LOADING_PHASES = [
+  { atSec:  0, msg: "Uploading photo…" },
+  { atSec:  4, msg: "Server received — running inference" },
+  { atSec: 20, msg: "Likely a cold start — model is loading on the GPU" },
+  { atSec: 60, msg: "Model is loaded — transcribing now" },
+  { atSec: 90, msg: "Still working — complex scores can take a while" },
+  { atSec: 150, msg: "Taking longer than expected — please be patient" },
+];
+
+let _loadingTimer = null;
+
+function showLoading() {
+  loadingOverlay.classList.remove("hidden");
+  loadingOverlay.setAttribute("aria-hidden", "false");
+  const t0 = performance.now();
+  const tick = () => {
+    const elapsedSec = (performance.now() - t0) / 1000;
+    loadingElapsed.textContent = elapsedSec < 60
+      ? `${elapsedSec.toFixed(1)}s`
+      : `${Math.floor(elapsedSec / 60)}m ${(elapsedSec % 60).toFixed(0)}s`;
+    let phase = LOADING_PHASES[0];
+    for (const p of LOADING_PHASES) {
+      if (elapsedSec >= p.atSec) phase = p;
+    }
+    loadingStatus.textContent = phase.msg;
+  };
+  tick();
+  _loadingTimer = setInterval(tick, 200);
+}
+
+function hideLoading() {
+  loadingOverlay.classList.add("hidden");
+  loadingOverlay.setAttribute("aria-hidden", "true");
+  if (_loadingTimer) { clearInterval(_loadingTimer); _loadingTimer = null; }
+}
+
 btnTranscribe.addEventListener("click", async () => {
   if (!state.img || !state.corners) return;
   btnTranscribe.disabled = true;
   statusEl.textContent = "transcribing…";
-  const bar = document.createElement("div");
-  bar.className = "inflight";
-  document.body.appendChild(bar);
+  showLoading();
 
   try {
     // Re-encode the source image to a JPEG blob so we're not uploading the
@@ -245,7 +294,7 @@ btnTranscribe.addEventListener("click", async () => {
     statusEl.textContent = "error";
     alert("Transcribe failed: " + err.message);
   } finally {
-    bar.remove();
+    hideLoading();
     btnTranscribe.disabled = false;
   }
 });
