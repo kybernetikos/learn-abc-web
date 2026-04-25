@@ -86,13 +86,18 @@
 <!-- transcribe-in-flight overlay -->
 <div id="loading-overlay" class="loading-overlay hidden" aria-hidden="true">
   <div class="loading-card">
-    <div class="loading-spinner"></div>
     <div class="loading-title">Transcribing</div>
+    <div class="loading-progress-wrap">
+      <div class="loading-progress-bar" id="loading-progress-bar"></div>
+    </div>
+    <div class="loading-eta" id="loading-eta">about 3 minutes</div>
     <div class="loading-status" id="loading-status">Uploading photo…</div>
-    <div class="loading-elapsed" id="loading-elapsed">0s</div>
+    <div class="loading-elapsed" id="loading-elapsed">0s elapsed</div>
     <div class="loading-hint">
-      First transcribe after a quiet period needs the model to warm up — that's ~60s.
-      Subsequent transcribes are ~10s.
+      The 32B model takes <strong>up to 3 minutes</strong> on the first
+      request after a quiet period (model has to load on the GPU). Subsequent
+      requests are much faster (~30s). Please keep this page open — your
+      screen will stay on while we wait.
     </div>
   </div>
 </div>

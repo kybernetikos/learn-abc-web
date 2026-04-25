@@ -216,40 +216,96 @@ btnRetake.addEventListener("click", () => {
 const loadingOverlay = $("loading-overlay");
 const loadingStatus = $("loading-status");
 const loadingElapsed = $("loading-elapsed");
+const loadingEta = $("loading-eta");
+const loadingBar = $("loading-progress-bar");
 
 const LOADING_PHASES = [
   { atSec:  0, msg: "Uploading photo…" },
-  { atSec:  4, msg: "Server received — running inference" },
-  { atSec: 20, msg: "Likely a cold start — model is loading on the GPU" },
-  { atSec: 60, msg: "Model is loaded — transcribing now" },
-  { atSec: 90, msg: "Still working — complex scores can take a while" },
-  { atSec: 150, msg: "Taking longer than expected — please be patient" },
+  { atSec:  4, msg: "Running inference on the GPU" },
+  { atSec: 25, msg: "Cold start — model is loading" },
+  { atSec: 75, msg: "Model loaded — transcribing your image" },
+  { atSec: 150, msg: "Almost there…" },
+  { atSec: 240, msg: "Taking longer than expected — keep waiting" },
 ];
 
+// Estimated total duration; the bar fills monotonically toward this and
+// asymptotes once we cross it (so it never visually finishes prematurely).
+const EXPECTED_TOTAL_SEC = 180;
+
 let _loadingTimer = null;
+let _wakeLock = null;
+
+function fmtSec(sec) {
+  if (sec < 60) return `${sec.toFixed(0)}s`;
+  return `${Math.floor(sec / 60)}m ${Math.round(sec % 60)}s`;
+}
+
+async function acquireWakeLock() {
+  if (!("wakeLock" in navigator)) return;
+  try {
+    _wakeLock = await navigator.wakeLock.request("screen");
+    _wakeLock.addEventListener("release", () => { _wakeLock = null; });
+  } catch (e) {
+    // wakeLock may be denied; not fatal.
+    console.warn("wakeLock denied:", e);
+  }
+}
+
+async function releaseWakeLock() {
+  try { if (_wakeLock) await _wakeLock.release(); } catch {}
+  _wakeLock = null;
+}
+
+// If the page tab is briefly backgrounded and the wake lock is auto-released,
+// re-request it when we come back to the foreground (still in flight).
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible"
+      && !loadingOverlay.classList.contains("hidden")) {
+    acquireWakeLock();
+  }
+});
 
 function showLoading() {
   loadingOverlay.classList.remove("hidden");
   loadingOverlay.setAttribute("aria-hidden", "false");
+  acquireWakeLock();
   const t0 = performance.now();
+  loadingBar.classList.remove("indeterminate");
+  loadingBar.style.width = "0%";
+
   const tick = () => {
     const elapsedSec = (performance.now() - t0) / 1000;
-    loadingElapsed.textContent = elapsedSec < 60
-      ? `${elapsedSec.toFixed(1)}s`
-      : `${Math.floor(elapsedSec / 60)}m ${(elapsedSec % 60).toFixed(0)}s`;
-    let phase = LOADING_PHASES[0];
-    for (const p of LOADING_PHASES) {
-      if (elapsedSec >= p.atSec) phase = p;
+
+    loadingElapsed.textContent = `${fmtSec(elapsedSec)} elapsed`;
+
+    // Progress bar: fill toward EXPECTED_TOTAL_SEC, then go indeterminate
+    // once we exceed it so it doesn't pretend we're done.
+    if (elapsedSec >= EXPECTED_TOTAL_SEC) {
+      loadingBar.classList.add("indeterminate");
+      loadingEta.textContent = "should be any moment now";
+    } else {
+      const fraction = Math.min(0.95, elapsedSec / EXPECTED_TOTAL_SEC);
+      loadingBar.style.width = `${(fraction * 100).toFixed(1)}%`;
+      const remainingSec = Math.max(5, EXPECTED_TOTAL_SEC - elapsedSec);
+      loadingEta.textContent = `about ${fmtSec(remainingSec)} remaining`;
     }
-    loadingStatus.textContent = phase.msg;
+
+    // Override status with rotating phase messages.
+    let phase = LOADING_PHASES[0];
+    for (const p of LOADING_PHASES) if (elapsedSec >= p.atSec) phase = p;
+    // Don't overwrite a retry message
+    if (!loadingStatus.textContent.startsWith("Connection hiccup")) {
+      loadingStatus.textContent = phase.msg;
+    }
   };
   tick();
-  _loadingTimer = setInterval(tick, 200);
+  _loadingTimer = setInterval(tick, 250);
 }
 
 function hideLoading() {
   loadingOverlay.classList.add("hidden");
   loadingOverlay.setAttribute("aria-hidden", "true");
+  releaseWakeLock();
   if (_loadingTimer) { clearInterval(_loadingTimer); _loadingTimer = null; }
 }
 
