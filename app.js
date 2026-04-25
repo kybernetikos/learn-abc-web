@@ -45,12 +45,23 @@ if ("serviceWorker" in navigator) {
 
 // ----- pre-warm the GPU inference container -----
 // Modal scales to zero when idle; the first request after a quiet period
-// has to spin up a GPU container + load the 32B model (~60-90s).  Fire a
-// fire-and-forget GET to /warmup on page load so the GPU container starts
-// spinning up while the user is taking the photo / dragging corners.  By
-// the time they hit Transcribe, container is usually ready and the
-// transcribe response comes back fast (no Modal 303-redirect issues).
-fetch(`${API_BASE}/warmup`, { method: "GET", mode: "cors" }).catch(() => {});
+// has to spin up a GPU container + load the 32B model (~60-150s).  If
+// the user hits Transcribe before the container is warm, Modal's HTTP
+// edge times out the response and 303-redirects to a polling URL whose
+// CORS handling is unreliable.  So we kick off /warmup on page load AND
+// await it before transcribing.  By the time the user finishes taking
+// a photo and dragging corners, the warmup is usually done.
+//
+// `state.warmupPromise` resolves to true when the GPU container has
+// loaded the model; false if warmup failed.  Refreshed when the user
+// starts a fresh transcribe so a long-idle session re-warms.
+let warmupPromise = startWarmup();
+
+function startWarmup() {
+  return fetch(`${API_BASE}/warmup`, { method: "GET", mode: "cors" })
+    .then(r => r.ok)
+    .catch(() => false);
+}
 
 // ----- capture -----
 fileInput.addEventListener("change", async (e) => {
@@ -322,8 +333,21 @@ btnTranscribe.addEventListener("click", async () => {
     const { blob, scale } = await encodeForUpload(state.img, 2400, 0.92);
     const uploadCorners = state.corners.map(([x, y]) => [x * scale, y * scale]);
 
-    // Helper to POST with retry.  Cold-start + mobile network combos are
-    // intermittent; one retry covers most of the noise.
+    // Wait for the GPU container to be warm before sending the transcribe.
+    // The page-load warmup is usually done by the time the user clicks
+    // Transcribe (they spent ~30s taking the photo + dragging corners), but
+    // on a fresh-cold-start visit the container can take 90-150s to load
+    // and we MUST not race it — that's what triggers the 303 → CORS issue.
+    loadingStatus.textContent = "Waiting for GPU container to be ready…";
+    const warmReady = await warmupPromise;
+    if (!warmReady) {
+      // Try one more warmup, then proceed regardless.
+      warmupPromise = startWarmup();
+      await warmupPromise;
+    }
+
+    // Helper to POST with retry.  With warmup confirmed, transient failures
+    // are most likely network blips — short backoffs are appropriate.
     const sendOnce = async () => {
       const form = new FormData();
       form.append("image", blob, "photo.jpg");
@@ -334,7 +358,6 @@ btnTranscribe.addEventListener("click", async () => {
         method: "POST", body: form, headers,
       });
       if (r.status === 429) {
-        // rate-limited — retrying won't help, surface immediately
         throw new Error(`rate limited: ${await r.text()}`);
       }
       if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
@@ -349,16 +372,20 @@ btnTranscribe.addEventListener("click", async () => {
         break;
       } catch (err) {
         lastErr = err;
-        // Don't retry rate-limit responses — just bubble up.
         if (String(err.message).startsWith("rate limited")) throw err;
         if (attempt < 3) {
           loadingStatus.textContent =
-            `Connection hiccup (attempt ${attempt}/3) — retrying in ${attempt * 4}s…`;
-          await new Promise(r => setTimeout(r, attempt * 4000));
+            `Connection hiccup (attempt ${attempt}/3) — retrying in ${attempt * 6}s…`;
+          await new Promise(r => setTimeout(r, attempt * 6000));
+          // Re-prime warmup before retry — container may have scaled down
+          warmupPromise = startWarmup();
+          await warmupPromise;
         }
       }
     }
     if (!data) throw lastErr || new Error("transcribe failed after 3 attempts");
+    // Refresh the warmup promise so subsequent transcribes use a fresh check.
+    warmupPromise = startWarmup();
 
     abcText.value = data.abc || "";
     state.submissionId = data.submission_id || null;
