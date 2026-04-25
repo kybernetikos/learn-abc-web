@@ -13,6 +13,7 @@ const fileInput    = $("file-input");
 const canvas       = $("corner-canvas");
 const ctx          = canvas.getContext("2d");
 const btnRetake    = $("btn-retake");
+const btnRotate    = $("btn-rotate");
 const btnTranscribe = $("btn-transcribe");
 const btnStartOver = $("btn-start-over");
 const btnPlay      = $("btn-play");
@@ -30,13 +31,26 @@ const statusEl     = $("status");
 
 const HANDLE_RADIUS = 22;  // CSS px touch target on screen
 let state = {
-  img: null,              // Image element with the full-res photo
-  corners: null,          // [[x,y],...] in SOURCE pixel coords, order TL TR BR BL
+  img: null,              // ImageBitmap (or HTMLImageElement fallback)
+  rotation: 0,            // 0/90/180/270 degrees clockwise applied at display+upload
+  corners: null,          // [[x,y],...] in EFFECTIVE (post-rotation) image coords; order TL TR BR BL
   dragIdx: null,          // index of the handle currently being dragged
-  displayScale: 1,        // CSS-pixels-per-source-pixel factor for the canvas
-  synthController: null,  // abcjs synth controller
-  submissionId: null,     // returned by /transcribe, used by /rating
+  displayScale: 1,        // CSS-pixels-per-effective-image-pixel
+  synthController: null,
+  submissionId: null,
 };
+
+function imgNativeDims(img) {
+  return [
+    img.naturalWidth || img.width,
+    img.naturalHeight || img.height,
+  ];
+}
+
+function effDims() {
+  const [w, h] = imgNativeDims(state.img);
+  return ((state.rotation % 180) === 0) ? [w, h] : [h, w];
+}
 
 // ----- service worker -----
 if ("serviceWorker" in navigator) {
@@ -67,17 +81,31 @@ function startWarmup() {
 fileInput.addEventListener("change", async (e) => {
   const f = e.target.files?.[0];
   if (!f) return;
-  const url = URL.createObjectURL(f);
-  const img = new Image();
-  img.onload = () => {
-    URL.revokeObjectURL(url);
-    state.img = img;
-    initCorners(img.naturalWidth, img.naturalHeight);
-    showStep("corners");
-    drawCanvas();
-  };
-  img.onerror = () => alert("Could not load that image.");
-  img.src = url;
+  state.rotation = 0;
+  // Honour EXIF orientation when supported, so phone photos arrive upright.
+  try {
+    state.img = await createImageBitmap(f, { imageOrientation: "from-image" });
+  } catch {
+    const url = URL.createObjectURL(f);
+    state.img = await new Promise((res, rej) => {
+      const i = new Image();
+      i.onload = () => { URL.revokeObjectURL(url); res(i); };
+      i.onerror = rej;
+      i.src = url;
+    });
+  }
+  const [w, h] = effDims();
+  initCorners(w, h);
+  showStep("corners");
+  drawCanvas();
+});
+
+btnRotate.addEventListener("click", () => {
+  if (!state.img || !state.corners) return;
+  const [, oldH] = effDims();
+  state.corners = state.corners.map(([x, y]) => [oldH - y, x]);
+  state.rotation = (state.rotation + 90) % 360;
+  drawCanvas();
 });
 
 function initCorners(w, h) {
@@ -95,8 +123,7 @@ function initCorners(w, h) {
 
 function resizeCanvas() {
   if (!state.img) return;
-  const iw = state.img.naturalWidth;
-  const ih = state.img.naturalHeight;
+  const [iw, ih] = effDims();   // post-rotation
   // Fit canvas to container width, preserving aspect ratio.  The canvas
   // backing store matches the CSS size × devicePixelRatio so strokes look
   // sharp on mobile.
@@ -109,7 +136,7 @@ function resizeCanvas() {
   canvas.width = Math.round(cssW * dpr);
   canvas.height = Math.round(cssH * dpr);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  state.displayScale = cssW / iw;   // source-px → CSS-px
+  state.displayScale = cssW / iw;   // effective-image-px → CSS-px
 }
 
 function drawCanvas() {
@@ -118,7 +145,18 @@ function drawCanvas() {
   const cssW = parseFloat(canvas.style.width);
   const cssH = parseFloat(canvas.style.height);
   ctx.clearRect(0, 0, cssW, cssH);
-  ctx.drawImage(state.img, 0, 0, cssW, cssH);
+
+  // Draw the image with rotation applied.  After rotate, the native
+  // (imgW × imgH) image fills the canvas's effective dimensions.
+  const [imgW, imgH] = imgNativeDims(state.img);
+  const s = state.displayScale;
+  ctx.save();
+  ctx.translate(cssW / 2, cssH / 2);
+  ctx.rotate(state.rotation * Math.PI / 180);
+  ctx.drawImage(state.img,
+                -imgW * s / 2, -imgH * s / 2,
+                imgW * s,      imgH * s);
+  ctx.restore();
 
   const pts = state.corners.map(([x, y]) =>
     [x * state.displayScale, y * state.displayScale]);
@@ -195,8 +233,7 @@ canvas.addEventListener("pointerdown", (ev) => {
 canvas.addEventListener("pointermove", (ev) => {
   if (state.dragIdx === null) return;
   const [sx, sy] = pointerToSrc(ev);
-  const w = state.img.naturalWidth;
-  const h = state.img.naturalHeight;
+  const [w, h] = effDims();
   state.corners[state.dragIdx] = [
     Math.max(0, Math.min(w, sx)),
     Math.max(0, Math.min(h, sy)),
@@ -218,6 +255,7 @@ canvas.addEventListener("pointercancel", endDrag);
 btnRetake.addEventListener("click", () => {
   state.img = null;
   state.corners = null;
+  state.rotation = 0;
   fileInput.value = "";
   showStep("capture");
 });
@@ -330,7 +368,7 @@ btnTranscribe.addEventListener("click", async () => {
     // Re-encode the source image to a JPEG blob so we're not uploading the
     // full phone-sized PNG/HEIC via the raw file.  If we scale the upload
     // down, we must scale the corner coordinates to match.
-    const { blob, scale } = await encodeForUpload(state.img, 2400, 0.92);
+    const { blob, scale } = await encodeForUpload(state.img, state.rotation, 2400, 0.92);
     const uploadCorners = state.corners.map(([x, y]) => [x * scale, y * scale]);
 
     // Wait for the GPU container to be warm before sending the transcribe.
@@ -394,7 +432,7 @@ btnTranscribe.addEventListener("click", async () => {
     refreshTradpubLink();
     // Show the warped preview so the user can see what the model saw.
     warpedPreview.innerHTML = "";
-    const warpBlob = await warpClientPreview(state.img, state.corners);
+    const warpBlob = await warpClientPreview(state.img, state.corners, state.rotation);
     if (warpBlob) {
       const img = new Image();
       img.src = URL.createObjectURL(warpBlob);
@@ -449,35 +487,50 @@ btnRateBad.addEventListener("click", () => {
   sendRating(1);
 });
 
-async function encodeForUpload(img, maxLongSide, quality) {
-  // Resize down if the image is huge.  Phone photos can be 4000+ px long
-  // side; server-side warp doesn't need more than ~2400 to get a clean staff
-  // image.  Returns the blob and the scale factor so the caller can scale
-  // corner coordinates to match.
-  const w = img.naturalWidth, h = img.naturalHeight;
-  const scale = Math.min(1, maxLongSide / Math.max(w, h));
-  const cw = Math.round(w * scale);
-  const ch = Math.round(h * scale);
+async function encodeForUpload(img, rotation, maxLongSide, quality) {
+  // Resize down if the image is huge AND bake any rotation in, so the
+  // server receives an upright JPEG with no EXIF orientation surprises.
+  // Returns the blob and the scale factor so the caller can scale
+  // corner coordinates (which are in EFFECTIVE image space) to match.
+  const [iw, ih] = imgNativeDims(img);
+  const swap = (rotation % 180) !== 0;
+  const ew = swap ? ih : iw;
+  const eh = swap ? iw : ih;
+  const scale = Math.min(1, maxLongSide / Math.max(ew, eh));
+  const cw = Math.round(ew * scale);
+  const ch = Math.round(eh * scale);
   const off = new OffscreenCanvas(cw, ch);
-  off.getContext("2d").drawImage(img, 0, 0, cw, ch);
+  const c = off.getContext("2d");
+  c.translate(cw / 2, ch / 2);
+  c.rotate(rotation * Math.PI / 180);
+  c.drawImage(img, -iw * scale / 2, -ih * scale / 2, iw * scale, ih * scale);
   const blob = await off.convertToBlob({ type: "image/jpeg", quality });
   return { blob, scale };
 }
 
-async function warpClientPreview(img, corners) {
-  // Best-effort preview: axis-aligned crop to the corners' bounding box.  We
-  // skip doing a real perspective warp here (the server has the real one) —
-  // this is just to show the user what region was sent.
+async function warpClientPreview(img, corners, rotation) {
+  // Best-effort preview: axis-aligned crop to the corners' bounding box from
+  // the rotation-baked image.  Corners are in EFFECTIVE image space.
+  const [iw, ih] = imgNativeDims(img);
+  const swap = (rotation % 180) !== 0;
+  const ew = swap ? ih : iw;
+  const eh = swap ? iw : ih;
   const xs = corners.map(c => c[0]);
   const ys = corners.map(c => c[1]);
   const x0 = Math.max(0, Math.floor(Math.min(...xs)));
   const y0 = Math.max(0, Math.floor(Math.min(...ys)));
-  const x1 = Math.min(img.naturalWidth,  Math.ceil(Math.max(...xs)));
-  const y1 = Math.min(img.naturalHeight, Math.ceil(Math.max(...ys)));
+  const x1 = Math.min(ew, Math.ceil(Math.max(...xs)));
+  const y1 = Math.min(eh, Math.ceil(Math.max(...ys)));
   const w = x1 - x0, h = y1 - y0;
   if (w < 10 || h < 10) return null;
+  // Render the rotation-baked image at full effective size, then crop.
+  const baked = new OffscreenCanvas(ew, eh);
+  const bctx = baked.getContext("2d");
+  bctx.translate(ew / 2, eh / 2);
+  bctx.rotate(rotation * Math.PI / 180);
+  bctx.drawImage(img, -iw / 2, -ih / 2);
   const off = new OffscreenCanvas(w, h);
-  off.getContext("2d").drawImage(img, x0, y0, w, h, 0, 0, w, h);
+  off.getContext("2d").drawImage(baked, x0, y0, w, h, 0, 0, w, h);
   return await off.convertToBlob({ type: "image/jpeg", quality: 0.85 });
 }
 
@@ -586,6 +639,7 @@ btnStartOver.addEventListener("click", () => {
   state.synthController = null;
   state.img = null;
   state.corners = null;
+  state.rotation = 0;
   fileInput.value = "";
   abcText.value = "";
   abcRender.innerHTML = "";
