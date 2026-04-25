@@ -265,16 +265,45 @@ btnTranscribe.addEventListener("click", async () => {
     // down, we must scale the corner coordinates to match.
     const { blob, scale } = await encodeForUpload(state.img, 2400, 0.92);
     const uploadCorners = state.corners.map(([x, y]) => [x * scale, y * scale]);
-    const form = new FormData();
-    form.append("image", blob, "photo.jpg");
-    form.append("corners", JSON.stringify(uploadCorners));
-    const headers = {};
-    if (!optSave.checked) headers["X-Save-Submission"] = "false";
-    const r = await fetch(`${API_BASE}/transcribe`, {
-      method: "POST", body: form, headers,
-    });
-    if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
-    const data = await r.json();
+
+    // Helper to POST with retry.  Cold-start + mobile network combos are
+    // intermittent; one retry covers most of the noise.
+    const sendOnce = async () => {
+      const form = new FormData();
+      form.append("image", blob, "photo.jpg");
+      form.append("corners", JSON.stringify(uploadCorners));
+      const headers = {};
+      if (!optSave.checked) headers["X-Save-Submission"] = "false";
+      const r = await fetch(`${API_BASE}/transcribe`, {
+        method: "POST", body: form, headers,
+      });
+      if (r.status === 429) {
+        // rate-limited — retrying won't help, surface immediately
+        throw new Error(`rate limited: ${await r.text()}`);
+      }
+      if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
+      return await r.json();
+    };
+
+    let data;
+    let lastErr;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        data = await sendOnce();
+        break;
+      } catch (err) {
+        lastErr = err;
+        // Don't retry rate-limit responses — just bubble up.
+        if (String(err.message).startsWith("rate limited")) throw err;
+        if (attempt < 3) {
+          loadingStatus.textContent =
+            `Connection hiccup (attempt ${attempt}/3) — retrying in ${attempt * 4}s…`;
+          await new Promise(r => setTimeout(r, attempt * 4000));
+        }
+      }
+    }
+    if (!data) throw lastErr || new Error("transcribe failed after 3 attempts");
+
     abcText.value = data.abc || "";
     state.submissionId = data.submission_id || null;
     resetRatingUI();
