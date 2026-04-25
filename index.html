@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1a1a1a">
+<title>learn-abc</title>
+<link rel="manifest" href="./manifest.json">
+<link rel="icon" type="image/svg+xml" href="./icon.svg">
+<link rel="apple-touch-icon" href="./icon-192.png">
+<link rel="stylesheet" href="./app.css">
+<script src="./abcjs-basic-min.js"></script>
+</head>
+<body>
+
+<header>
+  <h1>learn-abc</h1>
+  <span id="status"></span>
+</header>
+
+<!-- Step 1: capture -->
+<section id="step-capture" class="step">
+  <label class="primary-btn">
+    📷 Take / choose photo
+    <input type="file" accept="image/*" capture="environment" id="file-input" hidden>
+  </label>
+  <p class="hint">Take a well-lit photo of a single page of sheet music on a flat surface.</p>
+  <p class="hint notice">
+    This is an experimental ML demo. Photos and corrections you submit are
+    saved to help improve the model. No identifying information (IP,
+    location) is stored. Don't upload anything you don't want shared.
+    Untick the box on the result page to disable saving for a submission.
+  </p>
+</section>
+
+<!-- Step 2: corner selection -->
+<section id="step-corners" class="step hidden">
+  <div class="canvas-wrap">
+    <canvas id="corner-canvas"></canvas>
+  </div>
+  <div class="row">
+    <button id="btn-retake" class="secondary-btn">← Retake</button>
+    <button id="btn-transcribe" class="primary-btn">Transcribe →</button>
+  </div>
+  <p class="hint">Drag the four dots to the corners of the paper.</p>
+</section>
+
+<!-- Step 3: result -->
+<section id="step-result" class="step hidden">
+  <div class="row">
+    <button id="btn-start-over" class="secondary-btn">← New photo</button>
+    <button id="btn-play" class="primary-btn">▶ Play</button>
+  </div>
+  <div id="abc-render" class="abc-render"></div>
+
+  <!-- Quick rating -->
+  <div class="rating-row">
+    <span class="rating-prompt">How was the transcription?</span>
+    <button id="btn-rate-good" class="rating-btn" title="thumbs up">👍 Good</button>
+    <button id="btn-rate-bad"  class="rating-btn" title="thumbs down">👎 Bad</button>
+    <span id="rating-status" class="rating-status"></span>
+  </div>
+
+  <details open>
+    <summary>ABC source (editable)</summary>
+    <textarea id="abc-text" rows="18" spellcheck="false"></textarea>
+    <div class="row">
+      <button id="btn-rerender" class="secondary-btn">Re-render</button>
+      <button id="btn-copy" class="secondary-btn">Copy ABC</button>
+      <button id="btn-correct" class="primary-btn">💾 Save my corrections for training</button>
+    </div>
+  </details>
+  <details>
+    <summary>Warped input (what the model saw)</summary>
+    <div id="warped-preview"></div>
+  </details>
+
+  <p class="hint">
+    <label>
+      <input type="checkbox" id="opt-save" checked>
+      Save this submission to help improve the model.
+    </label>
+  </p>
+</section>
+
+<script src="./app.js" type="module"></script>
+</body>
+</html>
