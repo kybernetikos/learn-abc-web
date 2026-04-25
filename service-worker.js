@@ -1,6 +1,6 @@
 // Minimal service worker: cache the static shell so the app installs as a
 // PWA.  API requests always go to the network.
-const CACHE = "learn-abc-v3";
+const CACHE = "learn-abc-v4";
 // Service worker scope = the directory it's served from, so all paths here
 // are *relative to the SW's location*.  For GitHub Pages project sites this
 // keeps the cache scoped to /<repo-name>/ and not the whole user site.

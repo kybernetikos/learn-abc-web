@@ -342,10 +342,7 @@ function showLoading() {
     // Override status with rotating phase messages.
     let phase = LOADING_PHASES[0];
     for (const p of LOADING_PHASES) if (elapsedSec >= p.atSec) phase = p;
-    // Don't overwrite a retry message
-    if (!loadingStatus.textContent.startsWith("Connection hiccup")) {
-      loadingStatus.textContent = phase.msg;
-    }
+    loadingStatus.textContent = phase.msg;
   };
   tick();
   _loadingTimer = setInterval(tick, 250);
@@ -371,59 +368,74 @@ btnTranscribe.addEventListener("click", async () => {
     const { blob, scale } = await encodeForUpload(state.img, state.rotation, 2400, 0.92);
     const uploadCorners = state.corners.map(([x, y]) => [x * scale, y * scale]);
 
-    // Wait for the GPU container to be warm before sending the transcribe.
-    // The page-load warmup is usually done by the time the user clicks
-    // Transcribe (they spent ~30s taking the photo + dragging corners), but
-    // on a fresh-cold-start visit the container can take 90-150s to load
-    // and we MUST not race it — that's what triggers the 303 → CORS issue.
-    loadingStatus.textContent = "Waiting for GPU container to be ready…";
-    const warmReady = await warmupPromise;
-    if (!warmReady) {
-      // Try one more warmup, then proceed regardless.
-      warmupPromise = startWarmup();
-      await warmupPromise;
+    // ----- Step 1: spawn the inference job -----
+    // POST /transcribe returns immediately with {job_id}.  The actual GPU
+    // work happens in the background; we'll poll for it next.  This avoids
+    // Modal's HTTP edge ~3.5min request timeout swallowing slow cold starts.
+    loadingStatus.textContent = "Submitting to server…";
+    const startForm = new FormData();
+    startForm.append("image", blob, "photo.jpg");
+    startForm.append("corners", JSON.stringify(uploadCorners));
+    const startHeaders = {};
+    if (!optSave.checked) startHeaders["X-Save-Submission"] = "false";
+
+    const startResp = await fetch(`${API_BASE}/transcribe`, {
+      method: "POST", body: startForm, headers: startHeaders,
+    });
+    if (startResp.status === 429) {
+      throw new Error(`rate limited: ${await startResp.text()}`);
     }
+    if (!startResp.ok) {
+      throw new Error(`submit failed (HTTP ${startResp.status}): ${await startResp.text()}`);
+    }
+    const { job_id } = await startResp.json();
+    if (!job_id) throw new Error("server did not return a job_id");
 
-    // Helper to POST with retry.  With warmup confirmed, transient failures
-    // are most likely network blips — short backoffs are appropriate.
-    const sendOnce = async () => {
-      const form = new FormData();
-      form.append("image", blob, "photo.jpg");
-      form.append("corners", JSON.stringify(uploadCorners));
-      const headers = {};
-      if (!optSave.checked) headers["X-Save-Submission"] = "false";
-      const r = await fetch(`${API_BASE}/transcribe`, {
-        method: "POST", body: form, headers,
-      });
-      if (r.status === 429) {
-        throw new Error(`rate limited: ${await r.text()}`);
+    // ----- Step 2: poll for the result -----
+    // Each poll request is short (no risk of edge timeout, however long the
+    // cold start takes).  Network blips on individual polls are absorbed.
+    const POLL_INTERVAL_MS = 3000;
+    const POLL_TIMEOUT_MS = 10 * 60 * 1000;   // 10-minute hard cap
+    const pollStart = Date.now();
+    let consecutivePollErrors = 0;
+    let data = null;
+    while (true) {
+      if (Date.now() - pollStart > POLL_TIMEOUT_MS) {
+        throw new Error("inference timed out (>10 min) — try again");
       }
-      if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
-      return await r.json();
-    };
-
-    let data;
-    let lastErr;
-    for (let attempt = 1; attempt <= 3; attempt++) {
+      await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
+      let pollResp;
       try {
-        data = await sendOnce();
-        break;
-      } catch (err) {
-        lastErr = err;
-        if (String(err.message).startsWith("rate limited")) throw err;
-        if (attempt < 3) {
-          loadingStatus.textContent =
-            `Connection hiccup (attempt ${attempt}/3) — retrying in ${attempt * 6}s…`;
-          await new Promise(r => setTimeout(r, attempt * 6000));
-          // Re-prime warmup before retry — container may have scaled down
-          warmupPromise = startWarmup();
-          await warmupPromise;
+        pollResp = await fetch(`${API_BASE}/transcribe/${job_id}`);
+      } catch (e) {
+        // Transient network error — keep polling.
+        consecutivePollErrors++;
+        if (consecutivePollErrors > 10) {
+          throw new Error("lost connection while polling — please retry");
         }
+        continue;
       }
+      if (pollResp.status === 404) {
+        throw new Error("job not found on server — please retry");
+      }
+      if (!pollResp.ok) {
+        consecutivePollErrors++;
+        if (consecutivePollErrors > 10) {
+          throw new Error(`poll repeatedly failed (HTTP ${pollResp.status})`);
+        }
+        continue;
+      }
+      consecutivePollErrors = 0;
+      const status = await pollResp.json();
+      if (status.status === "done") {
+        data = status.result;
+        break;
+      }
+      if (status.status === "error") {
+        throw new Error(`inference failed: ${status.error}`);
+      }
+      // status.status === "pending" — keep polling.
     }
-    if (!data) throw lastErr || new Error("transcribe failed after 3 attempts");
-    // Refresh the warmup promise so subsequent transcribes use a fresh check.
-    warmupPromise = startWarmup();
 
     abcText.value = data.abc || "";
     state.submissionId = data.submission_id || null;
