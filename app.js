@@ -19,6 +19,7 @@ const btnPlay      = $("btn-play");
 const btnRerender  = $("btn-rerender");
 const btnCopy      = $("btn-copy");
 const btnCorrect   = $("btn-correct");
+const btnTradpub   = $("btn-tradpub");
 const btnRateGood  = $("btn-rate-good");
 const btnRateBad   = $("btn-rate-bad");
 const optSave      = $("opt-save");
@@ -391,6 +392,7 @@ btnTranscribe.addEventListener("click", async () => {
     state.submissionId = data.submission_id || null;
     resetRatingUI();
     renderAbc(abcText.value);
+    refreshTradpubLink();
     // Show the warped preview so the user can see what the model saw.
     warpedPreview.innerHTML = "";
     const warpBlob = await warpClientPreview(state.img, state.corners);
@@ -518,6 +520,49 @@ function renderAbc(abc) {
 }
 
 btnRerender.addEventListener("click", () => renderAbc(abcText.value));
+
+// ----- trad.pub share link -----
+//
+// trad.pub accepts a tune via `?t=<base64url(deflate-raw(utf8(abc)))>#music`.
+// The deflate compresses the ABC; base64url is the URL-safe variant
+// (`+`→`-`, `/`→`_`, no `=` padding).  On modern browsers, all of this is
+// built-in: CompressionStream, TextEncoder, btoa.
+async function tradpubUrlFor(abc) {
+  if (!abc.trim()) return null;
+  const bytes = new TextEncoder().encode(abc);
+  const stream = new CompressionStream("deflate-raw");
+  const writer = stream.writable.getWriter();
+  writer.write(bytes); writer.close();
+  const compressed = new Uint8Array(
+    await new Response(stream.readable).arrayBuffer());
+  let latin1 = "";
+  for (const b of compressed) latin1 += String.fromCharCode(b);
+  const b64url = btoa(latin1)
+    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  return `https://trad.pub/?t=${b64url}#music`;
+}
+
+async function refreshTradpubLink() {
+  try {
+    const url = await tradpubUrlFor(abcText.value);
+    if (url) btnTradpub.href = url;
+  } catch (e) {
+    console.warn("trad.pub link build failed:", e);
+  }
+}
+// Refresh the link whenever the ABC textarea changes (debounced lightly).
+let _tradpubTimer = null;
+abcText.addEventListener("input", () => {
+  clearTimeout(_tradpubTimer);
+  _tradpubTimer = setTimeout(refreshTradpubLink, 200);
+});
+// And when the link is clicked, build it just-in-time so a navigation never
+// uses a stale URL.
+btnTradpub.addEventListener("click", async (ev) => {
+  ev.preventDefault();
+  const url = await tradpubUrlFor(abcText.value);
+  if (url) window.open(url, "_blank", "noopener");
+});
 
 btnCopy.addEventListener("click", async () => {
   try {
