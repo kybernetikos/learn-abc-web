@@ -103,7 +103,14 @@ fileInput.addEventListener("change", async (e) => {
 btnRotate.addEventListener("click", () => {
   if (!state.img || !state.corners) return;
   const [, oldH] = effDims();
-  state.corners = state.corners.map(([x, y]) => [oldH - y, x]);
+  // Coord-transform: each handle's pixel position in the new (rotated) frame.
+  const t = state.corners.map(([x, y]) => [oldH - y, x]);
+  // Re-cycle the array so labels track visual positions.  After 90° CW the
+  // handle that was visually at UL is now at UR, etc.; shifting right by 1
+  // puts corners[0] (the "TL" label) back at visual UL.  Without this shift,
+  // submitting after rotation produces a CCW corner order — which cv2 warps
+  // as a 90° rotation, scrambling the model's view.
+  state.corners = [t[3], t[0], t[1], t[2]];
   state.rotation = (state.rotation + 90) % 360;
   drawCanvas();
 });
