@@ -321,11 +321,14 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 
+let _loadingT0 = null;
+
 function showLoading() {
   loadingOverlay.classList.remove("hidden");
   loadingOverlay.setAttribute("aria-hidden", "false");
   acquireWakeLock();
   const t0 = performance.now();
+  _loadingT0 = t0;
   loadingBar.classList.remove("indeterminate");
   loadingBar.style.width = "0%";
 
@@ -458,7 +461,18 @@ btnTranscribe.addEventListener("click", async () => {
       warpedPreview.appendChild(img);
     }
     showStep("result");
-    statusEl.textContent = `inference ${data.elapsed_sec}s`;
+    // Show both the server-side generate() time (data.elapsed_sec) and the
+    // total client-perceived wait (cold start + queue + polling + generate).
+    // The gap between them is overhead — useful when something feels slow.
+    const totalSec = _loadingT0 ? (performance.now() - _loadingT0) / 1000 : null;
+    if (totalSec !== null) {
+      const overhead = Math.max(0, totalSec - (data.elapsed_sec || 0));
+      statusEl.textContent =
+        `inference ${data.elapsed_sec}s · total ${totalSec.toFixed(1)}s `
+        + `(overhead ${overhead.toFixed(1)}s — cold start + queue + polling)`;
+    } else {
+      statusEl.textContent = `inference ${data.elapsed_sec}s`;
+    }
   } catch (err) {
     console.error(err);
     statusEl.textContent = "error";
